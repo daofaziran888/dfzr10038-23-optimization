@@ -86,6 +86,49 @@
       </form>
     </div>
 
+    <section v-if="moduleKey === 'feature_store'" class="reconcile-panel" data-testid="reconcile-panel">
+      <h3>回溯容量对账</h3>
+      <p v-if="reconcile" class="reconcile-summary" data-testid="reconcile-summary">
+        回溯确认行数汇总：{{ reconcile.summary.回溯确认行数汇总 }} ｜
+        容量汇总行数：{{ reconcile.summary.容量汇总行数 }} ｜
+        回执笔数：{{ reconcile.summary.回执笔数 }} ｜
+        <strong :class="reconcile.summary.逐笔相符 ? 'ok-text' : 'error-text'" data-testid="reconcile-balanced">
+          {{ reconcile.summary.逐笔相符 ? '逐笔相符' : '存在差异' }}
+        </strong>
+      </p>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>任务编号</th>
+            <th>目标特征</th>
+            <th>确认行数</th>
+            <th>配置编号</th>
+            <th>回执编号</th>
+            <th>入账行数</th>
+            <th>对账结果</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="line in reconcile?.lines ?? []" :key="line.任务编号" :data-testid="`reconcile-${line.任务编号}`">
+            <td>{{ line.任务编号 }}</td>
+            <td>{{ line.目标特征 }}</td>
+            <td>{{ line.确认行数 }}</td>
+            <td>{{ line.配置编号 || '—' }}</td>
+            <td>{{ line.回执编号 || '—' }}</td>
+            <td>{{ line.入账行数 }}</td>
+            <td>
+              <span v-if="!line.已入账" class="error-text">未入账，待重送</span>
+              <span v-else-if="line.差异 !== 0" class="error-text">差异 {{ line.差异 }}</span>
+              <span v-else class="ok-text">相符</span>
+            </td>
+          </tr>
+          <tr v-if="!reconcile?.lines?.length">
+            <td colspan="7" class="empty-state">暂无已确认的回溯容量计量，等待回溯批次交付</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
     <footer class="page-foot">
       <span>共 {{ total }} 条{{ meta.name }}记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
@@ -100,10 +143,11 @@ import {
   createEntry,
   downloadEntries,
   listEntries,
+  loadReconcile,
   moduleMeta,
   runAction as applyAction,
 } from '@/api/backend-service'
-import type { EntryRow } from '@/data/types'
+import type { EntryRow, ReconcileResult } from '@/data/types'
 
 const props = defineProps<{ moduleKey: string }>()
 const meta = moduleMeta(props.moduleKey)
@@ -115,6 +159,7 @@ const filterFields = meta.fields.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const reconcile = ref<ReconcileResult | null>(null)
 const stats = computed(() => [
   { label: meta.metrics[0], value: total.value },
   { label: meta.metrics[1], value: rows.value.filter((row) => row.status === meta.statuses[1]).length },
@@ -182,6 +227,10 @@ async function reload() {
     const payload = await listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
+    // 存储工作台每次进入或刷新都重新对账：回溯清单须与容量汇总逐笔对得上
+    if (props.moduleKey === 'feature_store') {
+      reconcile.value = await loadReconcile()
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '业务列表读取失败'
   }

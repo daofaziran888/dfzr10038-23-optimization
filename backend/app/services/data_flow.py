@@ -11,6 +11,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from app.services.capacity_ledger import capacity_ledger
 from app.store import store
 
 # ---------------------------------------------------------------------------
@@ -98,7 +99,7 @@ def _window_compute_for_derived(
 
 
 @_register(
-    "time_window/窗口关闭 → backfill_job/启动回溯 → feature_store/启用存储 → feature_mon/启用监控",
+    "time_window/关闭窗口 → backfill_job/启动回溯 → feature_store/启用存储 → feature_mon/启用监控",
     desc="窗口关闭后发起特征回溯，回溯完成写入存储并启用监控。",
 )
 def flow_window_to_backfill_to_store_mon(time_window_id: int) -> list[FlowEffect]:
@@ -130,34 +131,40 @@ def flow_window_to_backfill_to_store_mon(time_window_id: int) -> list[FlowEffect
 
 
 def _backfill_done_store_mon(backfill_row: dict[str, Any], effects: list[FlowEffect]):
-    """回溯完成：触发特征存储启用和监控规则检测。"""
+    """回溯完成：容量计量确认后幂等交付特征存储，再触发监控规则检测。"""
     backfill_row["status"] = "已完成"
     backfill_row["pending"] = False
     backfill_row["当前进度"] = "100%"
 
     job_no = str(backfill_row.get("任务编号", ""))
     target = str(backfill_row.get("目标特征", ""))
-    row_count = random.randint(50000, 500000)
-    backfill_row["数据行数"] = f"{row_count}行"
+
+    # 容量计量一次确认、重复交付去重：同一批次不会认领下一份草稿配置，
+    # 也不会累加同一份行数；确认后保存带配置编号、产出来源及行数的回执。
+    delivery = capacity_ledger.deliver_backfill(backfill_row)
+    metering = capacity_ledger.metering_for(job_no) or {}
+    row_count = int(metering.get("行数", 0))
 
     effects.append(FlowEffect(
         "回溯完成", "backfill_job", int(backfill_row.get("id", 0)),
         f"回溯任务 {job_no} 完成，产出 {row_count} 行，触发存储写入和监控检测",
     ))
 
-    # 触发特征存储写入
-    store_rows = store.rows("feature_store")
-    for srow in store_rows:
-        if srow.get("status") == "草稿":
-            srow["status"] = "已启用"
-            srow["pending"] = True
-            srow["storage_size_gb"] = round(row_count * 0.0001, 2)
-            srow["triggered_by"] = f"backfill_job/{job_no}"
+    # 特征存储消费容量计量数据：首次送达启用配置，重复送达按回执去重
+    receipt = delivery.get("receipt")
+    if receipt:
+        if delivery.get("duplicate"):
             effects.append(FlowEffect(
-                "启用存储", "feature_store", int(srow.get("id", 0)),
-                f"回溯 {job_no} 产出 {row_count}行 触发存储配置 {srow.get('配置编号','')} 启用",
+                "重复送达去重", "feature_store", int(delivery.get("config_id") or 0),
+                f"回溯 {job_no} 重复送达，容量已入账（回执 {receipt['回执编号']}），"
+                f"未重复认领配置或累加行数",
             ))
-            break
+        else:
+            effects.append(FlowEffect(
+                "启用存储", "feature_store", int(delivery.get("config_id") or 0),
+                f"回溯 {job_no} 产出 {row_count}行 触发存储配置 {receipt['配置编号']} 启用，"
+                f"回执 {receipt['回执编号']} 已保存",
+            ))
 
     # 触发特征监控检测
     mon_rows = store.rows("feature_mon")
@@ -370,7 +377,7 @@ def flow_version_to_online(version_mgr_id: int) -> list[FlowEffect]:
 
 
 @_register(
-    "sample_strata/已出样 → label_task/派发任务 → label_review/确认通过 → consent_calc/启动计算",
+    "sample_strata/确认出样 → label_task/派发任务 → label_review/确认通过 → consent_calc/启动计算",
     desc="样本确认出样后派发标注任务，审核通过后自动触发一致性计算。",
 )
 def flow_sample_to_label_to_review_to_consent(sample_strata_id: int) -> list[FlowEffect]:

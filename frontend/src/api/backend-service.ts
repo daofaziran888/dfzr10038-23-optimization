@@ -1,6 +1,6 @@
 import { request } from './client'
 import { moduleMeta } from '@/data/modules'
-import type { ActionResult, EntryRow, OverviewResult, PageResult } from '@/data/types'
+import type { ActionResult, EntryRow, OverviewResult, PageResult, ReconcileResult } from '@/data/types'
 
 export { moduleMeta }
 
@@ -57,5 +57,11 @@ export async function downloadEntries(
 export async function loadOverview(): Promise<OverviewResult> {
   const response = await request('/api/overview')
   if (!response.ok) throw new Error('运营概览读取失败')
+  return await response.json()
+}
+
+export async function loadReconcile(): Promise<ReconcileResult> {
+  const response = await request('/api/feature_store/reconcile')
+  if (!response.ok) throw new Error('容量对账读取失败')
   return await response.json()
 }

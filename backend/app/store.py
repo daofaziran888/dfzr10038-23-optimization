@@ -27,6 +27,12 @@ class Store:
                 return row
         return None
 
+    def reset(self) -> None:
+        """恢复示例数据，供测试与演示重置。"""
+        self._tables = {
+            name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
+        }
+
     def overview(self) -> dict[str, object]:
         modules: list[dict[str, object]] = []
         for name in self.module_names():
